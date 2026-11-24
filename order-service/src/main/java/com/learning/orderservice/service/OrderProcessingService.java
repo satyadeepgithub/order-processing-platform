@@ -1,5 +1,8 @@
+
 package com.learning.orderservice.service;
 
+import com.learning.orderservice.client.InventoryClient;
+import com.learning.orderservice.dto.InventoryReservationResponse;
 import com.learning.orderservice.model.OrderEntity;
 import com.learning.orderservice.model.OrderStatus;
 import com.learning.orderservice.repository.OrderRepository;
@@ -8,15 +11,19 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class OrderProcessingService {
 
     private final OrderRepository orderRepository;
+    private final InventoryClient inventoryClient;
 
-    public OrderProcessingService(OrderRepository orderRepository) {
+    public OrderProcessingService(
+            OrderRepository orderRepository,
+            InventoryClient inventoryClient) {
+
         this.orderRepository = orderRepository;
+        this.inventoryClient = inventoryClient;
     }
 
     @Async("orderTaskExecutor")
@@ -27,24 +34,27 @@ public class OrderProcessingService {
                         " on thread: " + Thread.currentThread().getName()
         );
 
-        try {
-            // Simulate inventory checking
-            Thread.sleep(5000);
+        OrderEntity order = orderRepository.findById(orderId)
+                .orElseThrow(() ->
+                        new IllegalStateException("Order not found: " + orderId)
+                );
 
-            OrderEntity order = orderRepository.findById(orderId)
-                    .orElseThrow(() ->
-                            new IllegalStateException("Order not found")
+        try {
+
+            // Call Inventory Service to reserve stock
+            InventoryReservationResponse response =
+                    inventoryClient.reserveStock(
+                            order.getProductCode(),
+                            order.getId(),
+                            order.getQuantity()
                     );
 
-            boolean available =
-                    ThreadLocalRandom.current().nextBoolean();
-
-            OrderStatus status = available
-                    ? OrderStatus.CONFIRMED
-                    : OrderStatus.REJECTED;
+            OrderStatus status =
+                    "RESERVED".equals(response.status())
+                            ? OrderStatus.CONFIRMED
+                            : OrderStatus.REJECTED;
 
             order.setStatus(status);
-
             orderRepository.save(order);
 
             System.out.println(
@@ -54,12 +64,16 @@ public class OrderProcessingService {
 
             return CompletableFuture.completedFuture(status);
 
-        } catch (InterruptedException ex) {
+        } catch (Exception ex) {
 
-            Thread.currentThread().interrupt();
+            System.err.println(
+                    "Inventory processing failed for order " + orderId +
+                            ": " + ex.getMessage()
+            );
 
             throw new IllegalStateException(
-                    "Order processing interrupted: " + orderId,
+                    "Unable to process inventory reservation for order: "
+                            + orderId,
                     ex
             );
         }
